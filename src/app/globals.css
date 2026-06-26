@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+html, body { height: 100%; }
+body { @apply bg-carvao text-zinc-100 font-sans antialiased; }
+
+.font-display { font-family: "Bebas Neue", sans-serif; letter-spacing: 0.02em; }
+
+::selection { background: #C9A24B; color: #0B0B0C; }
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; color: #000; }
+}

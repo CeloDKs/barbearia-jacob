@@ -1,0 +1,320 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// ───────────────────────────────────────────────────────────────
+/// CONVENÇÕES (herdadas dos projetos M7)
+/// • Dinheiro       -> Int em CENTAVOS (R$ 30,00 => 3000). Nunca float.
+/// • Soft-delete    -> deletedAt (nunca hard delete em entidades de negócio).
+/// • Snapshots      -> itens de agendamento/pedido guardam nome + preço
+///                     no momento da operação (histórico imutável).
+/// • Single-tenant  -> uma barbearia por deploy. Sem companyId.
+///                     (Para multi-tenant, ver nota no README.)
+/// ───────────────────────────────────────────────────────────────
+
+enum StatusAgendamento {
+  pendente
+  confirmado
+  concluido
+  cancelado
+}
+
+enum TipoRegistro {
+  entrada
+  saida
+}
+
+enum StatusPedido {
+  aguardando
+  pago
+  enviado
+  entregue
+  cancelado
+}
+
+enum FormaPagamento {
+  pix
+  maquininha
+  dinheiro
+}
+
+enum AcaoAuditoria {
+  login
+  logout
+  criacao
+  edicao
+  exclusao
+  alteracao_status
+  configuracao
+}
+
+/// ─────────────────────────────── ADMINISTRADORES
+model Admin {
+  id        String    @id @default(cuid())
+  nome      String
+  email     String    @unique
+  senhaHash String
+  ativo     Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  auditLogs AuditLog[]
+
+  @@map("admins")
+}
+
+/// ─────────────────────────────── EQUIPE (BARBEIROS)
+model Barbeiro {
+  id            String    @id @default(cuid())
+  nome          String
+  foto          String?
+  especialidade String?
+  descricao     String?
+  telefone      String?
+  instagram     String?
+  ativo         Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  agendamentos Agendamento[]
+
+  @@map("barbeiros")
+}
+
+/// ─────────────────────────────── CLIENTES
+model Cliente {
+  id           String    @id @default(cuid())
+  nomeCompleto String
+  telefone     String    @unique
+  email        String?
+  observacoes  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  agendamentos Agendamento[]
+  pedidos      Pedido[]
+
+  @@map("clientes")
+}
+
+/// ─────────────────────────────── SERVIÇOS  (preco em CENTAVOS)
+model Servico {
+  id             String    @id @default(cuid())
+  nome           String
+  descricao      String?
+  preco          Int
+  duracaoMinutos Int
+  imagem         String?
+  ativo          Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  combos       ComboServico[]
+  agendamentos AgendamentoServico[]
+
+  @@map("servicos")
+}
+
+/// ─────────────────────────────── COMBOS  (preco em CENTAVOS)
+model Combo {
+  id        String    @id @default(cuid())
+  nome      String
+  descricao String?
+  preco     Int
+  imagem    String?
+  ativo     Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  servicos     ComboServico[]
+  agendamentos AgendamentoCombo[]
+
+  @@map("combos")
+}
+
+model ComboServico {
+  comboId   String
+  servicoId String
+
+  combo   Combo   @relation(fields: [comboId], references: [id], onDelete: Cascade)
+  servico Servico @relation(fields: [servicoId], references: [id], onDelete: Cascade)
+
+  @@id([comboId, servicoId])
+  @@map("combo_servicos")
+}
+
+/// ─────────────────────────────── AGENDAMENTOS
+/// UNIQUE (barbeiroId, data, horario) => impede dupla marcação.
+/// valorTotal em CENTAVOS.
+model Agendamento {
+  id             String            @id @default(cuid())
+  clienteId      String
+  barbeiroId     String
+  data           DateTime          @db.Date
+  horario        String            // "HH:mm"
+  status         StatusAgendamento @default(pendente)
+  observacoes    String?
+  formaPagamento FormaPagamento?
+  valorTotal     Int               @default(0)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  deletedAt      DateTime?
+
+  cliente  Cliente  @relation(fields: [clienteId], references: [id])
+  barbeiro Barbeiro @relation(fields: [barbeiroId], references: [id])
+
+  servicos   AgendamentoServico[]
+  combos     AgendamentoCombo[]
+  financeiro RegistroFinanceiro[]
+
+  @@unique([barbeiroId, data, horario], name: "barbeiro_slot")
+  @@index([data])
+  @@index([clienteId])
+  @@map("agendamentos")
+}
+
+/// Snapshot do serviço no momento do agendamento
+model AgendamentoServico {
+  id            String @id @default(cuid())
+  agendamentoId String
+  servicoId     String
+  servicoNome   String
+  preco         Int
+
+  agendamento Agendamento @relation(fields: [agendamentoId], references: [id], onDelete: Cascade)
+  servico     Servico     @relation(fields: [servicoId], references: [id])
+
+  @@index([agendamentoId])
+  @@map("agendamento_servicos")
+}
+
+/// Snapshot do combo no momento do agendamento
+model AgendamentoCombo {
+  id            String @id @default(cuid())
+  agendamentoId String
+  comboId       String
+  comboNome     String
+  preco         Int
+
+  agendamento Agendamento @relation(fields: [agendamentoId], references: [id], onDelete: Cascade)
+  combo       Combo       @relation(fields: [comboId], references: [id])
+
+  @@index([agendamentoId])
+  @@map("agendamento_combos")
+}
+
+/// ─────────────────────────────── FINANCEIRO (append-only; valor em CENTAVOS)
+model RegistroFinanceiro {
+  id            String       @id @default(cuid())
+  agendamentoId String?      // saídas/despesas não têm agendamento
+  valor         Int
+  tipo          TipoRegistro
+  descricao     String?
+  createdAt     DateTime     @default(now())
+
+  agendamento Agendamento? @relation(fields: [agendamentoId], references: [id])
+
+  @@index([tipo])
+  @@index([createdAt])
+  @@map("registros_financeiros")
+}
+
+/// ─────────────────────────────── LOJA: PRODUTOS  (preco em CENTAVOS)
+model Produto {
+  id        String    @id @default(cuid())
+  nome      String
+  descricao String?
+  preco     Int
+  estoque   Int       @default(0) // unidades discretas (varejo)
+  categoria String?
+  imagens   String[]
+  ativo     Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  itensPedido ItemPedido[]
+
+  @@index([categoria])
+  @@map("produtos")
+}
+
+/// ─────────────────────────────── LOJA: PEDIDOS  (valorTotal em CENTAVOS)
+model Pedido {
+  id              String       @id @default(cuid())
+  clienteId       String
+  status          StatusPedido @default(aguardando)
+  valorTotal      Int          @default(0)
+  enderecoEntrega String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+
+  cliente Cliente      @relation(fields: [clienteId], references: [id])
+  itens   ItemPedido[]
+
+  @@index([clienteId])
+  @@index([status])
+  @@map("pedidos")
+}
+
+/// Snapshot do produto no momento do pedido
+model ItemPedido {
+  id            String @id @default(cuid())
+  pedidoId      String
+  produtoId     String
+  produtoNome   String
+  quantidade    Int
+  precoUnitario Int
+
+  pedido  Pedido  @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  produto Produto @relation(fields: [produtoId], references: [id])
+
+  @@index([pedidoId])
+  @@map("itens_pedido")
+}
+
+/// ─────────────────────────────── CONFIGURAÇÕES (linha única / singleton)
+model Configuracao {
+  id                   String   @id @default(cuid())
+  nomeBarbearia        String   @default("Barbearia Jacob")
+  whatsapp             String?
+  instagram            String?
+  endereco             String?
+  horarioFuncionamento String?
+  chavePix             String?
+  logo                 String?
+  favicon              String?
+  tema                 String   @default("dark")
+  updatedAt            DateTime @updatedAt
+
+  @@map("configuracoes")
+}
+
+/// ─────────────────────────────── AUDITORIA (append-only)
+model AuditLog {
+  id        String        @id @default(cuid())
+  usuarioId String?
+  acao      AcaoAuditoria
+  modulo    String
+  descricao String?
+  ip        String?
+  createdAt DateTime      @default(now())
+
+  usuario Admin? @relation(fields: [usuarioId], references: [id])
+
+  @@index([usuarioId])
+  @@index([acao])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
